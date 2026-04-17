@@ -1,10 +1,9 @@
-# NaïveProxy Manager TUI
+# NaïveProxy Manager 
 
-Интерактивный установщик и менеджер NaïveProxy с меню на whiptail.
+Интерактивный установщик и менеджер NaïveProxy
 
 ## Установка
-
-```bash <(curl -fsSL https://raw.githubusercontent.com/pumbaX/naiv/main/NaiveProxy-TUI.sh) ```
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/pumbaX/naiv/main/NaiveProxy.sh) 
 
 ## Требования
 - Ubuntu 22/24, Debian 11/12
