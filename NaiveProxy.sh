@@ -772,7 +772,7 @@ diagnose() {
   fi
 
   # 7. Port 443 TCP
-  if ss -tln 2>/dev/null | awk '$4 ~ /:443$/ {exit 0} END {exit 1}'; then
+  if ss -tln 2>/dev/null | grep -qE '(:443\s)'; then
     local pid_name
     pid_name=$(ss -tlnp 2>/dev/null | grep ":443 " | head -1 | grep -oP 'users:\(\("\K[^"]+' | head -1)
     echo "  $ok_mark TCP/443 слушает: ${pid_name:-?}"
