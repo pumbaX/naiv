@@ -4,7 +4,7 @@
 
 ## Установка
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/pumbaX/naiv/main/NaiveProxy.sh)
+sudo curl -fsSL https://raw.githubusercontent.com/pumbaX/naiv/main/NaiveProxy.sh -o NaiveProxy.sh && sudo bash NaiveProxy.sh
 ``` 
 
 ## Требования
