@@ -1,4 +1,4 @@
-# NaïveProxy Manager
+# NaïveProxy 
 
 Интерактивный установщик и менеджер [NaïveProxy](https://github.com/klzgrad/naiveproxy) для Ubuntu/Debian. Ставит Caddy с naive-плагином forwardproxy, настраивает TLS, BBR, firewall и systemd — всё одним скриптом с удобным меню.
 
