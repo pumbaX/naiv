@@ -15,7 +15,7 @@
 Одна команда:
 
 ```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/pumbaX/naiv/main/NaiveProxy.sh)
+curl -fsSL https://raw.githubusercontent.com/pumbaX/naiv/main/NaiveProxy.sh -o /tmp/naive.sh && sudo bash /tmp/naive.sh
 ```
 
 Открывается меню — дальше по пунктам.
