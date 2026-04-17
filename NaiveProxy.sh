@@ -16,11 +16,11 @@ trap cleanup EXIT
 
 # ─── Helpers ───────────────────────────────────────────────
 need_root() {
-  [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "❌ Run as root"; exit 1; }
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "❌ Запустите от root"; exit 1; }
 }
 
 require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || { echo "❌ Missing: $1"; exit 1; }
+  command -v "$1" >/dev/null 2>&1 || { echo "❌ Отсутствует команда: $1"; exit 1; }
 }
 
 ensure_pkgs() {
@@ -120,7 +120,7 @@ backup_now() {
   mkdir -p "$BACKUP_DIR"
   local f="$BACKUP_DIR/caddy_$(date +%Y%m%d_%H%M%S).bak"
   cp "$CONFIG" "$f"
-  echo "✔ Backup: $f"
+  echo "✔ Бэкап: $f"
 
   # Авто-чистка: оставляем последние $MAX_BACKUPS
   local count
@@ -205,7 +205,7 @@ ask_credentials() {
       echo "  → Логин: $_LOGIN"
       ;;
     2)
-      read -rp "  Login: " _LOGIN
+      read -rp "  Логин: " _LOGIN
       ;;
     *)
       _LOGIN="$(gen_random 12)"
@@ -225,7 +225,7 @@ ask_credentials() {
       echo "  → Пароль: $_PASSWORD"
       ;;
     2)
-      read -rsp "  Password (скрытый ввод): " _PASSWORD
+      read -rsp "  Пароль (скрытый ввод): " _PASSWORD
       echo ""
       ;;
     *)
@@ -484,10 +484,10 @@ install_or_reinstall() {
   local server_ip domain_ip
   server_ip="$(curl -4 -s --connect-timeout 5 ifconfig.me || true)"
   domain_ip="$(dig +short A "$DOMAIN" | head -n1 || true)"
-  echo "Server IP: ${server_ip:-не определён}"
-  echo "Domain IP: ${domain_ip:-не определён}"
+  echo "IP сервера: ${server_ip:-не определён}"
+  echo "IP домена:  ${domain_ip:-не определён}"
   if [[ -n "$server_ip" && -n "$domain_ip" && "$server_ip" != "$domain_ip" ]]; then
-    read -rp "⚠️ DNS mismatch! Продолжить? (y/n): " yn
+    read -rp "⚠️ IP сервера и домена не совпадают! Продолжить? (y/n): " yn
     [[ "$yn" == "y" ]] || exit 1
   fi
 
@@ -772,9 +772,10 @@ diagnose() {
   fi
 
   # 7. Port 443 TCP
-  if ss -tln 2>/dev/null | grep -qE '(:443\s)'; then
+  # Надёжнее: -H (без заголовка), парсим колонку Local Address:Port
+  if ss -Hlnt 2>/dev/null | awk '{print $4}' | grep -qE '[:.]443$'; then
     local pid_name
-    pid_name=$(ss -tlnp 2>/dev/null | grep ":443 " | head -1 | grep -oP 'users:\(\("\K[^"]+' | head -1)
+    pid_name=$(ss -Hlntp 2>/dev/null | awk '$4 ~ /[:.]443$/ {print; exit}' | grep -oP 'users:\(\("\K[^"]+' | head -1)
     echo "  $ok_mark TCP/443 слушает: ${pid_name:-?}"
     ((ok++))
   else
@@ -782,13 +783,13 @@ diagnose() {
     ((err++))
   fi
 
-  # 8. Port 443 UDP (QUIC)
-  if ss -uln 2>/dev/null | awk '$4 ~ /:443$/ {exit 0} END {exit 1}'; then
-    echo "  $ok_mark UDP/443 слушает (QUIC/HTTP3)"
+  # 8. Port 443 UDP (QUIC/HTTP3) — информационно, Caddy по умолчанию работает на TLS/TCP
+  if ss -Hlnu 2>/dev/null | awk '{print $4}' | grep -qE '[:.]443$'; then
+    echo "  $ok_mark UDP/443 слушает (QUIC/HTTP3 включён)"
     ((ok++))
   else
-    echo "  $warn_mark UDP/443 не слушает (QUIC не работает, но не критично)"
-    ((warn++))
+    echo "  $ok_mark UDP/443 — Caddy работает на TLS/TCP (по умолчанию, это норма)"
+    ((ok++))
   fi
 
   # 9. TLS certificate
@@ -967,8 +968,8 @@ show_status() {
 
   # Port listening
   local p443_tcp p443_udp
-  p443_tcp=$(ss -tln 2>/dev/null | awk '$4 ~ /:443$/ {print "TCP"; exit}')
-  p443_udp=$(ss -uln 2>/dev/null | awk '$4 ~ /:443$/ {print "UDP"; exit}')
+  p443_tcp=$(ss -Hlnt 2>/dev/null | awk '$4 ~ /[:.]443$/ {print "TCP"; exit}')
+  p443_udp=$(ss -Hlnu 2>/dev/null | awk '$4 ~ /[:.]443$/ {print "UDP"; exit}')
   if [[ -n "$p443_tcp" || -n "$p443_udp" ]]; then
     echo "  │ :443:       ${p443_tcp:-}${p443_udp:+ ${p443_udp}}"
   fi
@@ -996,26 +997,26 @@ while true; do
   show_status
 
   echo ""
-  echo "  1)  Install"
-  echo "  2)  Update Caddy"
-  echo "  3)  Reinstall"
+  echo "  1)  Установить"
+  echo "  2)  Обновить Caddy"
+  echo "  3)  Переустановить"
   echo "  ─"
-  echo "  4)  Add client"
-  echo "  5)  List clients"
-  echo "  6)  Delete client"
-  echo "  7)  Change password"
-  echo "  8)  Show QR code"
+  echo "  4)  Добавить клиента"
+  echo "  5)  Список клиентов"
+  echo "  6)  Удалить клиента"
+  echo "  7)  Сменить пароль"
+  echo "  8)  QR-код"
   echo "  ─"
-  echo "  9)  Backup config"
-  echo "  10) Restore backup"
-  echo "  11) Export JSON"
+  echo "  9)  Создать бэкап"
+  echo "  10) Восстановить бэкап"
+  echo "  11) Экспорт JSON"
   echo "  ─"
-  echo "  12) Show config"
-  echo "  13) Show logs"
-  echo "  14) Service control (start/stop/restart)"
-  echo "  15) Diagnose"
-  echo "  16) Uninstall"
-  echo "  0)  Exit"
+  echo "  12) Показать конфиг"
+  echo "  13) Показать логи"
+  echo "  14) Управление сервисом"
+  echo "  15) Диагностика"
+  echo "  16) Удалить установку"
+  echo "  0)  Выход"
   echo ""
 
   read -rp "  Выбор: " MODE
@@ -1054,7 +1055,7 @@ while true; do
         read -rp "  [1/2]: " choice
         case "$choice" in
           2)
-            read -rsp "  Password (скрытый ввод): " NEWPASS
+            read -rsp "  Пароль (скрытый ввод): " NEWPASS
             echo ""
             ;;
           *)
