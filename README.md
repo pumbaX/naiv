@@ -3,7 +3,9 @@
 Интерактивный установщик и менеджер NaïveProxy
 
 ## Установка
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/pumbaX/naiv/main/NaiveProxy.sh) 
+```bash
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/pumbaX/naiv/main/NaiveProxy.sh)
+``` 
 
 ## Требования
 - Ubuntu 22/24, Debian 11/12
