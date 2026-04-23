@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
+# NaïveProxy Manager-1.2 — Caddy (klzgrad/forwardproxy)
+# Архитектура: клиент → Caddy:443 (TLS, Chromium fingerprint) → internet
 set -euo pipefail
 
+# ═══════════════════════════════════════════════════════════
+# КОНСТАНТЫ
+# ═══════════════════════════════════════════════════════════
 CONFIG="/etc/caddy/Caddyfile"
 BACKUP_DIR="/etc/caddy/backups"
 TMPDIR_BUILD="/root/naiveproxy-build-tmp"
 GO_TAR="/tmp/go.tar.gz"
-MAX_BACKUPS="${MAX_BACKUPS:-10}"  # сколько бэкапов хранить
+MAX_BACKUPS="${MAX_BACKUPS:-10}"
 
-# ─── Cleanup ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# CLEANUP
+# ═══════════════════════════════════════════════════════════
 cleanup() {
   rm -f "$GO_TAR" 2>/dev/null || true
   [[ -d "$TMPDIR_BUILD" ]] && rm -rf "$TMPDIR_BUILD" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-# ─── Helpers ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════════════
 need_root() {
-  [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "❌ Запустите от root (sudo bash ...)"; exit 1; }
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "❌ Запустите от root"; exit 1; }
 }
 
 require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || { echo "❌ Отсутствует команда: $1"; exit 1; }
+  command -v "$1" >/dev/null 2>&1 || { echo "❌ Не найдена команда: $1"; exit 1; }
 }
 
 ensure_pkgs() {
@@ -36,7 +45,11 @@ ensure_caddy_running() {
   }
 }
 
-# ─── Detect arch ───────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# ARCH DETECT
+# Баг-фикс: ошибка идёт в stderr, не в stdout — иначе при $() перехвате
+# значение "❌ ..." попадёт в переменную go_arch и xcaddy упадёт с кривым аргументом
+# ═══════════════════════════════════════════════════════════
 detect_go_arch() {
   local machine
   machine="$(uname -m)"
@@ -44,17 +57,23 @@ detect_go_arch() {
     x86_64)  echo "amd64" ;;
     aarch64) echo "arm64" ;;
     armv7l)  echo "armv6l" ;;
-    *)       echo "❌ Неподдерживаемая архитектура: $machine"; exit 1 ;;
+    *)
+      echo "❌ Неподдерживаемая архитектура: $machine" >&2
+      exit 1
+      ;;
   esac
 }
 
-# ─── Install Go + build caddy (единая функция) ────────────
+# ═══════════════════════════════════════════════════════════
+# BUILD CADDY
+# ═══════════════════════════════════════════════════════════
 build_caddy() {
   local go_arch
   go_arch="$(detect_go_arch)"
 
   local go_version
-  go_version="$(curl -fsSL https://go.dev/VERSION?m=text | head -n1)"
+  go_version="$(curl -fsSL "https://go.dev/VERSION?m=text" | head -n1)"
+  [[ -n "$go_version" ]] || { echo "❌ Не смог получить версию Go"; exit 1; }
   echo "📦 Go $go_version ($go_arch)"
 
   wget -q "https://go.dev/dl/${go_version}.linux-${go_arch}.tar.gz" -O "$GO_TAR"
@@ -67,7 +86,6 @@ build_caddy() {
 
   go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
-  # Собираем в фиксированную директорию
   cd "$TMPDIR_BUILD"
   /root/go/bin/xcaddy build \
     --with github.com/caddyserver/forwardproxy@caddy2=github.com/klzgrad/forwardproxy@naive
@@ -79,16 +97,16 @@ build_caddy() {
   echo "✔ Caddy собран: $(caddy version 2>/dev/null || echo 'ok')"
 }
 
-# ─── Systemd unit ──────────────────────────────────────────
-ensure_systemd_unit() {
+# ═══════════════════════════════════════════════════════════
+# SYSTEMD UNIT — CADDY
+
+# ═══════════════════════════════════════════════════════════
+ensure_systemd_unit_caddy() {
   local unit="/etc/systemd/system/caddy.service"
-  if [[ -f "$unit" ]]; then
-    return 0
-  fi
-  echo "📝 Создаю systemd unit..."
+  # Пересоздаём при каждой установке
   cat > "$unit" <<'UNIT'
 [Unit]
-Description=Caddy (NaiveProxy)
+Description=Caddy (NaiveProxy frontend)
 After=network.target network-online.target
 Requires=network-online.target
 
@@ -111,18 +129,20 @@ RestartSec=5s
 WantedBy=multi-user.target
 UNIT
   systemctl daemon-reload
-  echo "✔ Systemd unit создан"
+  echo "✔ Systemd unit (caddy) создан/обновлён"
 }
 
-# ─── Backup ────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# BACKUP
+# ═══════════════════════════════════════════════════════════
 backup_now() {
-  [[ -f "$CONFIG" ]] || { echo "⚠️ Конфиг не найден, бэкап пропущен"; return 0; }
+  [[ -f "$CONFIG" ]] || { echo "⚠️  Конфиг не найден, бэкап пропущен"; return 0; }
   mkdir -p "$BACKUP_DIR"
-  local f="$BACKUP_DIR/caddy_$(date +%Y%m%d_%H%M%S).bak"
+  local f
+  f="$BACKUP_DIR/caddy_$(date +%Y%m%d_%H%M%S).bak"
   cp "$CONFIG" "$f"
   echo "✔ Бэкап: $f"
 
-  # Авто-чистка: оставляем последние $MAX_BACKUPS
   local count
   count=$(ls -1 "$BACKUP_DIR"/caddy_*.bak 2>/dev/null | wc -l)
   if [[ "$count" -gt "$MAX_BACKUPS" ]]; then
@@ -132,11 +152,12 @@ backup_now() {
   fi
 }
 
-# ─── Validate config before applying ──────────────────────
+# ═══════════════════════════════════════════════════════════
+# APPLY NEW CONFIG (валидация + reload, откат при ошибке)
+# ═══════════════════════════════════════════════════════════
 apply_new_config() {
   local new_config="$1"
 
-  # Причёсываем форматирование (убирает WARN about formatting)
   caddy fmt --overwrite "$new_config" 2>/dev/null || true
 
   if ! caddy validate --config "$new_config" 2>/dev/null; then
@@ -150,7 +171,9 @@ apply_new_config() {
   echo "✔ Конфиг применён"
 }
 
-# ─── Parse domain from Caddyfile ───────────────────────────
+# ═══════════════════════════════════════════════════════════
+# PARSE DOMAIN FROM CADDYFILE
+# ═══════════════════════════════════════════════════════════
 get_domain() {
   awk '
     /:443/ {
@@ -165,9 +188,11 @@ get_domain() {
   ' "$CONFIG"
 }
 
-# ─── Validation ────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# VALIDATION
+# ═══════════════════════════════════════════════════════════
 validate_user() {
-  [[ -n "$1" ]] || { echo "❌ Пустой логин"; exit 1; }
+  [[ -n "${1:-}" ]] || { echo "❌ Пустой логин"; exit 1; }
   [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || {
     echo "❌ Невалидный логин (допустимы: A-Za-z0-9_-)"
     exit 1
@@ -175,7 +200,7 @@ validate_user() {
 }
 
 validate_password() {
-  [[ -n "$1" ]] || { echo "❌ Пустой пароль"; exit 1; }
+  [[ -n "${1:-}" ]] || { echo "❌ Пустой пароль"; exit 1; }
   if [[ "$1" =~ [[:space:]\"\'\\\`] ]]; then
     echo "❌ Пароль содержит недопустимые символы (пробел, кавычки, бэкслеш)"
     exit 1
@@ -183,7 +208,6 @@ validate_password() {
 }
 
 gen_random() {
-  # $1 = длина (по умолчанию 16)
   local len="${1:-16}"
   local result
   result="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c "$len")"
@@ -191,8 +215,6 @@ gen_random() {
   echo "$result"
 }
 
-# Спрашивает логин и пароль с выбором: сгенерировать или ввести вручную
-# Устанавливает глобальные переменные _LOGIN и _PASSWORD
 ask_credentials() {
   echo ""
   echo "  Логин:"
@@ -200,10 +222,6 @@ ask_credentials() {
   echo "  2) Ввести вручную"
   read -rp "  [1/2]: " choice
   case "$choice" in
-    1)
-      _LOGIN="$(gen_random 12)"
-      echo "  → Логин: $_LOGIN"
-      ;;
     2)
       read -rp "  Логин: " _LOGIN
       ;;
@@ -220,10 +238,6 @@ ask_credentials() {
   echo "  2) Ввести вручную"
   read -rp "  [1/2]: " choice
   case "$choice" in
-    1)
-      _PASSWORD="$(gen_random 24)"
-      echo "  → Пароль: $_PASSWORD"
-      ;;
     2)
       read -rsp "  Пароль (скрытый ввод): " _PASSWORD
       echo ""
@@ -236,11 +250,20 @@ ask_credentials() {
   validate_password "$_PASSWORD"
 }
 
-# ─── Client lines ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# CLIENT MANAGEMENT HELPERS
+#
+# Баг-фикс: после caddy fmt строки могут начинаться с табов/пробелов.
+# gsub убирает leading whitespace перед split, иначе $2 окажется пустым.
+# ═══════════════════════════════════════════════════════════
 list_clients_lines() {
+  [[ -f "$CONFIG" ]] || return 0
   awk '
-    /^[[:space:]]*#/ {next}
-    /^[[:space:]]*basic_auth[[:space:]]+/ {print}
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*basic_auth[[:space:]]+/ {
+      gsub(/^[[:space:]]+/, "")
+      print
+    }
   ' "$CONFIG"
 }
 
@@ -249,13 +272,10 @@ user_exists() {
   list_clients_lines | awk '{print $2}' | grep -Fxq "$u"
 }
 
-# Возвращает массив имён пользователей
 get_users_array() {
   list_clients_lines | awk '{print $2}'
 }
 
-# Интерактивный выбор клиента по номеру. Возвращает имя в stdout.
-# Использование: user="$(pick_client)" || return
 pick_client() {
   local -a users=()
   while IFS= read -r u; do
@@ -272,7 +292,7 @@ pick_client() {
   local i=1
   for u in "${users[@]}"; do
     printf "    %2d) %s\n" "$i" "$u" >&2
-    ((i++))
+    i=$((i + 1))   # Баг-фикс: ((i++)) при set -e падает когда i==0 (exit code 1)
   done
   echo "     0) Отмена" >&2
   echo "" >&2
@@ -284,10 +304,12 @@ pick_client() {
   [[ "$num" =~ ^[0-9]+$ ]] || { echo "❌ Не число" >&2; return 1; }
   [[ "$num" -ge 1 && "$num" -le ${#users[@]} ]] || { echo "❌ Вне диапазона" >&2; return 1; }
 
-  echo "${users[$((num-1))]}"
+  echo "${users[$((num - 1))]}"
 }
 
-# ─── List clients ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# LIST CLIENTS
+# ═══════════════════════════════════════════════════════════
 list_clients() {
   local domain
   domain="$(get_domain)"
@@ -299,20 +321,24 @@ list_clients() {
   local count=0
   while IFS=' ' read -r _ user pass _rest; do
     [[ -n "$user" && -n "$pass" ]] || continue
-    ((count++)) || true
+    count=$((count + 1))
     printf "  [%d] %s\n" "$count" "$user"
     echo "      naive+https://${user}:${pass}@${domain}:443"
     echo ""
   done < <(list_clients_lines)
 
   if [[ $count -eq 0 ]]; then
-    echo "  ⚠️ Клиентов нет"
+    echo "  ⚠️  Клиентов нет"
   else
     echo "  Всего: $count"
   fi
 }
 
-# ─── Add client ────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# ADD CLIENT
+# Баг-фикс: ищем строку forward_proxy { через более точный regex
+# чтобы не зависеть от количества пробелов после caddy fmt
+# ═══════════════════════════════════════════════════════════
 add_client() {
   ensure_caddy_running
   local user="$1" pass="$2"
@@ -326,13 +352,13 @@ add_client() {
     BEGIN { added = 0 }
     {
       print $0
-      if ($0 ~ /forward_proxy[[:space:]]*\{/) {
+      if (!added && $0 ~ /^[[:space:]]*forward_proxy[[:space:]]*\{/) {
         print "    basic_auth " u " " p
         added = 1
       }
     }
     END {
-      if (!added) exit 2
+      if (!added) { print "❌ Не нашёл блок forward_proxy { в конфиге" > "/dev/stderr"; exit 2 }
     }
   ' "$CONFIG" > "${CONFIG}.new"
 
@@ -343,7 +369,9 @@ add_client() {
   echo "✔ naive+https://${user}:${pass}@${domain}:443"
 }
 
-# ─── Delete client ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# DELETE CLIENT
+# ═══════════════════════════════════════════════════════════
 delete_client() {
   ensure_caddy_running
   local user="$1"
@@ -354,7 +382,11 @@ delete_client() {
 
   awk -v u="$user" '
     /^[[:space:]]*basic_auth[[:space:]]+/ {
-      if ($2 == u) next
+      # gsub убирает leading whitespace для корректного split
+      line = $0
+      gsub(/^[[:space:]]+/, "", line)
+      split(line, parts, /[[:space:]]+/)
+      if (parts[2] == u) next
     }
     { print }
   ' "$CONFIG" > "${CONFIG}.new"
@@ -363,7 +395,9 @@ delete_client() {
   echo "✔ Удалён: $user"
 }
 
-# ─── Change password ──────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# CHANGE PASSWORD
+# ═══════════════════════════════════════════════════════════
 change_password() {
   ensure_caddy_running
   local user="$1" newpass="$2"
@@ -375,7 +409,10 @@ change_password() {
 
   awk -v u="$user" -v p="$newpass" '
     /^[[:space:]]*basic_auth[[:space:]]+/ {
-      if ($2 == u) {
+      line = $0
+      gsub(/^[[:space:]]+/, "", line)
+      split(line, parts, /[[:space:]]+/)
+      if (parts[2] == u) {
         print "    basic_auth " u " " p
         next
       }
@@ -390,7 +427,9 @@ change_password() {
   echo "✔ naive+https://${user}:${newpass}@${domain}:443"
 }
 
-# ─── Restore backup ───────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# RESTORE BACKUP
+# ═══════════════════════════════════════════════════════════
 restore_backup() {
   ensure_caddy_running
   [[ -d "$BACKUP_DIR" ]] || { echo "❌ Нет директории бэкапов"; return 1; }
@@ -413,7 +452,7 @@ restore_backup() {
     local date_str
     date_str="$(stat -c '%y' "$BACKUP_DIR/$f" 2>/dev/null | cut -d. -f1)"
     printf "    %2d) %s  (%s)\n" "$i" "$f" "${date_str:-?}"
-    ((i++))
+    i=$((i + 1))
   done
   echo "     0) Отмена"
   echo ""
@@ -424,12 +463,11 @@ restore_backup() {
   [[ "$num" =~ ^[0-9]+$ ]] || { echo "❌ Не число"; return 1; }
   [[ "$num" -ge 1 && "$num" -le ${#files[@]} ]] || { echo "❌ Вне диапазона"; return 1; }
 
-  local chosen="${files[$((num-1))]}"
+  local chosen="${files[$((num - 1))]}"
 
-  read -rp "  Восстановить '$chosen'? Текущий конфиг будет сохранён в новый бэкап. (y/n): " yn
+  read -rp "  Восстановить '$chosen'? Текущий конфиг сохранится в новый бэкап. (y/n): " yn
   [[ "$yn" == "y" ]] || { echo "Отмена"; return 0; }
 
-  # Сохраним текущий конфиг перед восстановлением
   backup_now
 
   if ! caddy validate --config "$BACKUP_DIR/$chosen" 2>/dev/null; then
@@ -442,7 +480,9 @@ restore_backup() {
   echo "✔ Восстановлено из: $chosen"
 }
 
-# ─── Export JSON ───────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# EXPORT JSON — sing-box naive outbound формат (server_name для TLS SNI)
+# ═══════════════════════════════════════════════════════════
 export_json() {
   require_cmd jq
   local domain
@@ -460,70 +500,74 @@ export_json() {
         type: "naive",
         tag: $user,
         server: $server,
-        port: 443,
+        server_port: 443,
         username: $user,
         password: $pass,
-        tls: true
+        tls: {
+          enabled: true,
+          server_name: $server
+        }
       }')")
   done < <(list_clients_lines)
 
   if [[ ${#results[@]} -eq 0 ]]; then
-    echo "⚠️ Клиентов нет"
+    echo "⚠️  Клиентов нет"
     return
   fi
 
   printf '%s\n' "${results[@]}" | jq -s '.'
 }
 
-# ─── Install / Reinstall ──────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# INSTALL / REINSTALL
+# ═══════════════════════════════════════════════════════════
 install_or_reinstall() {
-  read -rp "Домен: " DOMAIN
+  read -rp "  Домен: " DOMAIN
   [[ -n "$DOMAIN" ]] || { echo "❌ Пустой домен"; exit 1; }
 
   # DNS check
   local server_ip domain_ip
-  server_ip="$(curl -4 -s --connect-timeout 5 ifconfig.me || true)"
-  domain_ip="$(dig +short A "$DOMAIN" | head -n1 || true)"
-  echo "IP сервера: ${server_ip:-не определён}"
-  echo "IP домена:  ${domain_ip:-не определён}"
+  server_ip="$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || true)"
+  domain_ip="$(dig +short A "$DOMAIN" 2>/dev/null | head -n1 || true)"
+  echo "  IP сервера: ${server_ip:-не определён}"
+  echo "  IP домена:  ${domain_ip:-не определён}"
   if [[ -n "$server_ip" && -n "$domain_ip" && "$server_ip" != "$domain_ip" ]]; then
-    read -rp "⚠️ IP сервера и домена не совпадают! Продолжить? (y/n): " yn
+    read -rp "  ⚠️  IP сервера и домена не совпадают! Продолжить? (y/n): " yn
     [[ "$yn" == "y" ]] || exit 1
   fi
 
-  # Check ports
-  for PORT in 80 443; do
-    if ss -tlnp | grep -q ":${PORT} "; then
-      echo "❌ Порт $PORT занят:"
-      ss -tlnp | grep ":${PORT} " || true
+  # Проверка портов 80 и 443
+  # Баг-фикс: PORT был глобальной переменной (нет local внутри цикла)
+  local port_check
+  for port_check in 80 443; do
+    if ss -tlnp 2>/dev/null | grep -q ":${port_check} "; then
+      echo "  ❌ Порт $port_check занят:"
+      ss -tlnp 2>/dev/null | grep ":${port_check} " || true
       exit 1
     fi
   done
 
-  # Email для TLS (Let's Encrypt)
+  # Email для Let's Encrypt
   echo ""
   echo "  Email для TLS-сертификата:"
-  echo "  1) Тестовый (admin@example.com) — только для проверки, не использовать на реальном сервере!"
-  echo "  2) Ввести свой рабочий email (рекомендуется)"
+  echo "  1) Тестовый (admin@example.com)"
+  echo "  2) Ввести свой (рекомендуется)"
   read -rp "  [1/2]: " choice
+  local EMAIL
   case "$choice" in
     1)
       EMAIL="admin@example.com"
-      echo ""
-      echo "  ⚠️  ВНИМАНИЕ: тестовый email."
-      echo "  ⚠️  Let's Encrypt не сможет прислать уведомления об истечении сертификата."
-      echo "  ⚠️  Используй этот вариант только для теста/одноразового сервера."
-      read -rp "  Продолжить с тестовым email? (y/n): " yn
+      echo "  ⚠️  Тестовый email — только для проверки!"
+      read -rp "  Продолжить? (y/n): " yn
       [[ "$yn" == "y" ]] || exit 1
       ;;
-    2|*)
+    *)
       read -rp "  Email: " EMAIL
       [[ "$EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]] || {
         echo "❌ Невалидный email"; exit 1
       }
-      # Защита от случайного ввода example.com
       if [[ "$EMAIL" =~ @(example\.(com|org|net)|localhost)$ ]]; then
-        echo "⚠️  Этот домен зарезервирован для тестов (example.com/org/net)."
+        echo "  ⚠️  Зарезервированный домен."
         read -rp "  Всё равно использовать? (y/n): " yn
         [[ "$yn" == "y" ]] || exit 1
       fi
@@ -537,14 +581,14 @@ install_or_reinstall() {
 
   ensure_pkgs
 
-  # BBR (Шаг 2 из мануала)
+  # BBR
   if ! sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
     echo "📶 Включаю BBR..."
     grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf 2>/dev/null \
       || echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
     grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf 2>/dev/null \
       || echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    sysctl -p
+    sysctl -p >/dev/null
     echo "✔ BBR включён"
   else
     echo "✔ BBR уже активен"
@@ -561,20 +605,21 @@ install_or_reinstall() {
 
   mkdir -p /var/www/html /etc/caddy
 
-  # Камуфляжная страница (Шаг 7 из мануала)
+  # Камуфляжная страница
   if [[ ! -f /var/www/html/index.html ]]; then
-    cat > /var/www/html/index.html << 'HTMLEOF'
+    cat > /var/www/html/index.html <<'HTMLEOF'
 <!DOCTYPE html><html><head><meta charset="utf-8"><title>Loading</title><style>body{background:#080808;height:100vh;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif}.bar{width:200px;height:3px;background:#151515;overflow:hidden;border-radius:2px;margin-bottom:25px}.fill{height:100%;width:40%;background:#fff;animation:slide 1.4s infinite ease-in-out}@keyframes slide{0%{transform:translateX(-100%)}50%{transform:translateX(50%)}100%{transform:translateX(200%)}}.t{color:#555;font-size:13px;letter-spacing:3px;font-weight:600}</style></head><body><div class="bar"><div class="fill"></div></div><div class="t">LOADING CONTENT</div></body></html>
 HTMLEOF
     echo "✔ Камуфляжная страница создана"
   fi
 
   if [[ -f "$CONFIG" ]]; then
-    read -rp "⚠️ Конфиг уже существует. Перезаписать? (y/n): " yn
+    read -rp "  ⚠️  Конфиг уже существует. Перезаписать? (y/n): " yn
     [[ "$yn" == "y" ]] || exit 1
     backup_now
   fi
 
+  # Генерируем Caddyfile
   cat > "$CONFIG" <<EOF
 {
   order forward_proxy before file_server
@@ -596,7 +641,6 @@ HTMLEOF
 }
 EOF
 
-  # Причёсываем форматирование
   caddy fmt --overwrite "$CONFIG" 2>/dev/null || true
 
   if ! caddy validate --config "$CONFIG"; then
@@ -604,19 +648,21 @@ EOF
     exit 1
   fi
 
-  ensure_systemd_unit
-  systemctl daemon-reload
+  ensure_systemd_unit_caddy
   systemctl enable caddy
   systemctl restart caddy
 
   echo ""
-  echo "═══════════════════════════════════════════"
+  echo "  ═══════════════════════════════════════════"
   echo "  ✔ NaïveProxy установлен"
+  echo ""
   echo "  naive+https://${LOGIN}:${PASSWORD}@${DOMAIN}:443"
-  echo "═══════════════════════════════════════════"
+  echo "  ═══════════════════════════════════════════"
 }
 
-# ─── Update Caddy ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# UPDATE CADDY
+# ═══════════════════════════════════════════════════════════
 update_caddy() {
   ensure_caddy_running
   ensure_pkgs
@@ -626,39 +672,48 @@ update_caddy() {
   echo "✔ Caddy обновлён: $(caddy version 2>/dev/null || echo 'ok')"
 }
 
-# ─── Uninstall ─────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════
+# UNINSTALL — полная очистка сервера
+# Бэкапы Caddy СОХРАНЯЮТСЯ в $BACKUP_DIR
+# ═══════════════════════════════════════════════════════════
 uninstall() {
   echo ""
-  echo "  ⚠️  ВНИМАНИЕ: будет удалён Caddy, конфиг и systemd unit."
-  echo "  Бэкапы в $BACKUP_DIR и конфиг в $CONFIG СОХРАНЯТСЯ."
+  echo "  ⚠️  Будут удалены: Caddy, Go, systemd unit, конфиги."
+  echo "  Бэкапы в $BACKUP_DIR СОХРАНЯТСЯ."
   echo ""
   read -rp "  Вы уверены? (y/n): " yn
   [[ "$yn" == "y" ]] || { echo "Отмена"; return 0; }
 
-  read -rp "  Точно? Это необратимо. Введите 'YES' заглавными: " yes2
+
+  read -rp "  Введите 'YES' заглавными для подтверждения: " yes2
   [[ "$yes2" == "YES" ]] || { echo "Отмена"; return 0; }
 
   systemctl stop caddy 2>/dev/null || true
   systemctl disable caddy 2>/dev/null || true
   rm -f /etc/systemd/system/caddy.service
   rm -f /usr/bin/caddy
+
+  systemctl stop sing-box 2>/dev/null || true
+  systemctl disable sing-box 2>/dev/null || true
+  apt-get remove -y sing-box 2>/dev/null || true
+
   systemctl daemon-reload
 
-  echo ""
   echo "  ✔ Удалено."
-  echo "  Конфиг сохранён: $CONFIG"
+  echo "  Конфиг Caddy сохранён: $CONFIG"
   echo "  Бэкапы сохранены: $BACKUP_DIR"
 }
 
-# ─── Show QR code ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# SHOW QR
+# ═══════════════════════════════════════════════════════════
 show_qr() {
   local domain
   domain="$(get_domain)"
   [[ -n "$domain" ]] || { echo "❌ Домен не найден"; return 1; }
 
-  # Проверим qrencode
   if ! command -v qrencode >/dev/null 2>&1; then
-    echo "📦 Устанавливаю qrencode..."
     DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1 || {
       echo "❌ Не удалось установить qrencode"
       return 1
@@ -668,9 +723,8 @@ show_qr() {
   local user
   user="$(pick_client)" || { echo "Отмена"; return 0; }
 
-  # Достаём пароль этого пользователя
   local pass
-  pass=$(list_clients_lines | awk -v u="$user" '$2 == u {print $3; exit}')
+  pass=$(list_clients_lines | awk -v u="$user" '{gsub(/^[[:space:]]+/,""); if ($2 == u) {print $3; exit}}')
   [[ -n "$pass" ]] || { echo "❌ Не нашёл пароль для '$user'"; return 1; }
 
   local url="naive+https://${user}:${pass}@${domain}:443"
@@ -679,13 +733,121 @@ show_qr() {
   echo "  Ссылка для '$user':"
   echo "  $url"
   echo ""
-  echo "  QR-код (отсканируй телефоном → импорт в Karing/NekoBox):"
+  echo "  QR-код (Karing / NekoBox):"
   echo ""
   qrencode -t ANSIUTF8 -m 2 "$url"
   echo ""
 }
 
-# ─── Diagnose ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# SERVICE CONTROL
+# ═══════════════════════════════════════════════════════════
+service_control() {
+  echo ""
+  echo "  Управление сервисом Caddy:"
+  echo "    2) Остановить всё"
+  echo "    3) Перезапустить всё"
+  echo "    4) Статус Caddy"
+  echo "    5) Логи Caddy (live)"
+  echo "    0) Назад"
+  echo ""
+  read -rp "  Выбор: " sc
+
+  case "$sc" in
+    1)
+      systemctl start caddy && echo "✔ Caddy запущен" || echo "❌ Caddy не запустился"
+      ;;
+    2)
+      read -rp "  ⚠️  Остановить? Все клиенты потеряют связь. (y/n): " yn
+      [[ "$yn" == "y" ]] || { echo "Отмена"; return 0; }
+      systemctl stop caddy 2>/dev/null && echo "✔ Caddy остановлен" || true
+      ;;
+    3)
+      systemctl restart caddy && echo "✔ Caddy перезапущен" || echo "❌ Caddy не перезапустился"
+      ;;
+    4)
+      echo ""
+      systemctl status caddy --no-pager 2>&1 | head -25
+      ;;
+    5)
+      echo "  Ctrl+C для выхода"
+      journalctl -u caddy -f --no-pager
+      ;;
+    0) return 0 ;;
+    *) echo "❌ Неверный выбор" ;;
+  esac
+}
+
+# ═══════════════════════════════════════════════════════════
+# LIST BACKUPS
+# ═══════════════════════════════════════════════════════════
+list_backups() {
+  [[ -d "$BACKUP_DIR" ]] || { echo "⚠️  Нет директории бэкапов"; return 1; }
+
+  local -a files=()
+  while IFS= read -r f; do
+    [[ -f "$BACKUP_DIR/$f" ]] && files+=("$f")
+  done < <(ls -1 "$BACKUP_DIR" 2>/dev/null | sort -r)
+
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo "⚠️  Бэкапов нет"
+    return 1
+  fi
+
+  echo ""
+  echo "  Бэкапы в $BACKUP_DIR:"
+  echo "  ────────────────────────────────────────"
+  local i=1
+  for f in "${files[@]}"; do
+    local date_str
+    date_str="$(stat -c '%y' "$BACKUP_DIR/$f" 2>/dev/null | cut -d. -f1)"
+    printf "    %2d) %s  (%s)\n" "$i" "$f" "${date_str:-?}"
+    i=$((i + 1))
+  done
+  echo "  Всего: ${#files[@]}"
+}
+
+# ═══════════════════════════════════════════════════════════
+# STATUS (шапка меню)
+# ═══════════════════════════════════════════════════════════
+show_status() {
+  echo ""
+  echo "  ┌─────────────────────────────────────────────┐"
+
+  if systemctl is-active --quiet caddy 2>/dev/null; then
+    echo "  │ Caddy:      🟢 работает"
+  else
+    echo "  │ Caddy:      🔴 не запущен"
+  fi
+
+  if [[ -f "$CONFIG" ]]; then
+    local domain
+    domain="$(get_domain 2>/dev/null || echo '')"
+    echo "  │ Домен:      ${domain:-не найден}"
+
+    local cnt
+    cnt=$(list_clients_lines 2>/dev/null | wc -l | tr -d ' ')
+    echo "  │ Клиентов:   ${cnt:-0}"
+  else
+    echo "  │ Конфиг:     не установлен"
+  fi
+
+  if command -v caddy >/dev/null 2>&1; then
+    local ver
+    ver="$(caddy version 2>/dev/null | awk '{print $1}' | head -1)"
+    echo "  │ Caddy ver:  ${ver:-unknown}"
+  fi
+
+  local p443
+  p443=$(ss -Hlnt 2>/dev/null | awk '$4 ~ /[:.]443$/ {print "TCP ✔"; exit}')
+  echo "  │ :443:       ${p443:-нет}"
+
+  echo "  └─────────────────────────────────────────────┘"
+}
+
+# ═══════════════════════════════════════════════════════════
+# DIAGNOSE
+# ═══════════════════════════════════════════════════════════
 diagnose() {
   echo ""
   echo "  ═══════════ ДИАГНОСТИКА ═══════════"
@@ -698,149 +860,140 @@ diagnose() {
     local ver
     ver="$(caddy version 2>/dev/null | awk '{print $1}' | head -1)"
     echo "  $ok_mark Caddy установлен: $ver"
-    ((ok++))
+    ok=$((ok + 1))
   else
-    echo "  $err_mark Caddy не установлен. Выполни установку (пункт 1)"
-    ((err++))
+    echo "  $err_mark Caddy не установлен — выполни установку (пункт 1)"
+    err=$((err + 1))
     echo ""
     return 1
   fi
 
-  # 2. Systemd unit
+  # 3. Systemd unit caddy
   if [[ -f /etc/systemd/system/caddy.service ]]; then
-    echo "  $ok_mark Systemd unit существует"
-    ((ok++))
+    echo "  $ok_mark Systemd unit caddy существует"
+    ok=$((ok + 1))
   else
-    echo "  $err_mark Нет systemd unit — переустанови"
-    ((err++))
+    echo "  $err_mark Нет systemd unit caddy — переустанови"
+    err=$((err + 1))
   fi
 
-  # 3. Caddy running
+  # 4. Caddy running
   if systemctl is-active --quiet caddy 2>/dev/null; then
     echo "  $ok_mark Caddy запущен"
-    ((ok++))
+    ok=$((ok + 1))
   else
-    echo "  $err_mark Caddy не запущен. Запустить: systemctl start caddy"
-    ((err++))
+    echo "  $err_mark Caddy не запущен: systemctl start caddy"
+    err=$((err + 1))
   fi
 
-  # 4. Config existing & valid
+  # 7. Caddyfile валиден
   if [[ -f "$CONFIG" ]]; then
     if caddy validate --config "$CONFIG" >/dev/null 2>&1; then
       echo "  $ok_mark Caddyfile валиден"
-      ((ok++))
+      ok=$((ok + 1))
     else
-      echo "  $err_mark Caddyfile невалиден! Проверь: caddy validate --config $CONFIG"
-      ((err++))
+      echo "  $err_mark Caddyfile невалиден: caddy validate --config $CONFIG"
+      err=$((err + 1))
     fi
   else
     echo "  $err_mark Нет конфига: $CONFIG"
-    ((err++))
+    err=$((err + 1))
   fi
 
-  # 5. Domain parsing
+  # 9. Домен
   local domain
-  domain="$(get_domain)"
+  domain="$(get_domain 2>/dev/null || echo '')"
   if [[ -n "$domain" ]]; then
-    echo "  $ok_mark Домен в конфиге: $domain"
-    ((ok++))
+    echo "  $ok_mark Домен: $domain"
+    ok=$((ok + 1))
   else
     echo "  $err_mark Домен не найден в конфиге"
-    ((err++))
-    echo ""
+    err=$((err + 1))
     echo "  Дальнейшие проверки пропущены."
     return 1
   fi
 
-  # 6. DNS check
+  # 10. DNS
   local server_ip domain_ip
   server_ip="$(curl -4 -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo '')"
   domain_ip="$(dig +short A "$domain" 2>/dev/null | head -n1 || echo '')"
   if [[ -z "$server_ip" ]]; then
     echo "  $warn_mark Не смог определить IP сервера (нет интернета?)"
-    ((warn++))
+    warn=$((warn + 1))
   elif [[ -z "$domain_ip" ]]; then
-    echo "  $err_mark DNS домена $domain не резолвится"
-    ((err++))
+    echo "  $err_mark DNS $domain не резолвится"
+    err=$((err + 1))
   elif [[ "$server_ip" == "$domain_ip" ]]; then
-    echo "  $ok_mark DNS: $domain → $domain_ip (совпадает с IP сервера)"
-    ((ok++))
+    echo "  $ok_mark DNS: $domain → $domain_ip ✔"
+    ok=$((ok + 1))
   else
     echo "  $err_mark DNS несовпадение: сервер=$server_ip, домен=$domain_ip"
-    echo "          → TLS сертификат не выпустится пока не починишь A-запись"
-    ((err++))
+    echo "          → TLS не выпустится пока не исправишь A-запись"
+    err=$((err + 1))
   fi
 
-  # 7. Port 443 TCP
-  # Надёжнее: -H (без заголовка), парсим колонку Local Address:Port
+  # 11. TCP/443
   if ss -Hlnt 2>/dev/null | awk '{print $4}' | grep -qE '[:.]443$'; then
     local pid_name
-    pid_name=$(ss -Hlntp 2>/dev/null | awk '$4 ~ /[:.]443$/ {print; exit}' | grep -oP 'users:\(\("\K[^"]+' | head -1)
+    pid_name=$(ss -Hlntp 2>/dev/null | awk '$4 ~ /[:.]443$/ {print; exit}' \
+               | grep -oP 'users:\(\("\K[^"]+' | head -1)
     echo "  $ok_mark TCP/443 слушает: ${pid_name:-?}"
-    ((ok++))
+    ok=$((ok + 1))
   else
-    echo "  $err_mark TCP/443 не слушает никто!"
-    ((err++))
+    echo "  $err_mark TCP/443 не слушает никто"
+    err=$((err + 1))
   fi
 
-  # 8. Port 443 UDP (QUIC/HTTP3) — информационно, Caddy по умолчанию работает на TLS/TCP
-  if ss -Hlnu 2>/dev/null | awk '{print $4}' | grep -qE '[:.]443$'; then
-    echo "  $ok_mark UDP/443 слушает (QUIC/HTTP3 включён)"
-    ((ok++))
-  else
-    echo "  $ok_mark UDP/443 — Caddy работает на TLS/TCP (по умолчанию, это норма)"
-    ((ok++))
-  fi
-
-  # 9. TLS certificate
+  # 12. TLS сертификат
   if [[ -n "$domain" ]]; then
-    local tls_out
-    tls_out=$(timeout 5 openssl s_client -connect "${domain}:443" -servername "$domain" </dev/null 2>/dev/null | openssl x509 -noout -dates 2>/dev/null)
+    local tls_out expires
+    tls_out=$(timeout 5 openssl s_client \
+      -connect "${domain}:443" -servername "$domain" \
+      </dev/null 2>/dev/null | openssl x509 -noout -dates 2>/dev/null || true)
     if [[ -n "$tls_out" ]]; then
-      local expires
       expires=$(echo "$tls_out" | grep "notAfter" | cut -d= -f2)
-      echo "  $ok_mark TLS сертификат активен, действует до: $expires"
-      ((ok++))
+      echo "  $ok_mark TLS сертификат активен до: $expires"
+      ok=$((ok + 1))
     else
       echo "  $err_mark Не удалось получить TLS сертификат от $domain:443"
-      ((err++))
+      err=$((err + 1))
     fi
   fi
 
-  # 10. Probe resistance — ответ на запрос без auth должен быть HTML
+  # 13. Probe resistance (без auth должна быть HTML страница)
   if [[ -n "$domain" ]]; then
     local http_code
     http_code=$(timeout 5 curl -s -o /dev/null -w "%{http_code}" "https://${domain}/" 2>/dev/null || echo "000")
     if [[ "$http_code" == "200" ]]; then
       echo "  $ok_mark Камуфляжная страница отвечает (HTTP 200)"
-      ((ok++))
+      ok=$((ok + 1))
     elif [[ "$http_code" == "000" ]]; then
       echo "  $warn_mark Не смог подключиться к $domain (фаерволл?)"
-      ((warn++))
+      warn=$((warn + 1))
     else
       echo "  $warn_mark Домен отдаёт HTTP $http_code (ожидалось 200)"
-      ((warn++))
+      warn=$((warn + 1))
     fi
   fi
 
-  # 11. BBR
+  # 14. BBR
   if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
     echo "  $ok_mark BBR включён"
-    ((ok++))
+    ok=$((ok + 1))
   else
     echo "  $warn_mark BBR не включён (скорость может быть ниже)"
-    ((warn++))
+    warn=$((warn + 1))
   fi
 
-  # 12. Clients count
+  # 15. Клиенты
   local cnt
   cnt=$(list_clients_lines 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$cnt" -gt 0 ]]; then
     echo "  $ok_mark Клиентов настроено: $cnt"
-    ((ok++))
+    ok=$((ok + 1))
   else
-    echo "  $warn_mark Нет настроенных клиентов (добавь через пункт 4)"
-    ((warn++))
+    echo "  $warn_mark Нет клиентов (добавь через пункт 4)"
+    warn=$((warn + 1))
   fi
 
   echo ""
@@ -851,130 +1004,10 @@ diagnose() {
   if [[ $err -eq 0 && $warn -eq 0 ]]; then
     echo "  ✔ Всё в порядке!"
   elif [[ $err -eq 0 ]]; then
-    echo "  ⚠️  Есть предупреждения, но критичного ничего."
+    echo "  ⚠️  Есть предупреждения, критичного нет."
   else
     echo "  ❌ Есть ошибки, требуется внимание."
   fi
-}
-
-# ─── Service control ──────────────────────────────────────
-service_control() {
-  echo ""
-  echo "  Управление сервисом Caddy:"
-  echo "    1) Запустить (start)"
-  echo "    2) Остановить (stop)"
-  echo "    3) Перезапустить (restart)"
-  echo "    4) Статус (status)"
-  echo "    0) Назад"
-  echo ""
-  read -rp "  Выбор: " sc
-
-  case "$sc" in
-    1)
-      if systemctl start caddy; then
-        echo "✔ Caddy запущен"
-      else
-        echo "❌ Не удалось запустить. Смотри логи (пункт 12)"
-      fi
-      ;;
-    2)
-      read -rp "  ⚠️  Остановить Caddy? Все клиенты потеряют связь. (y/n): " yn
-      [[ "$yn" == "y" ]] || { echo "Отмена"; return 0; }
-      if systemctl stop caddy; then
-        echo "✔ Caddy остановлен"
-      else
-        echo "❌ Не удалось остановить"
-      fi
-      ;;
-    3)
-      if systemctl restart caddy; then
-        echo "✔ Caddy перезапущен"
-      else
-        echo "❌ Не удалось перезапустить. Смотри логи (пункт 12)"
-      fi
-      ;;
-    4)
-      echo ""
-      systemctl status caddy --no-pager 2>&1 | head -20
-      ;;
-    0) return 0 ;;
-    *) echo "❌ Неверный выбор" ;;
-  esac
-}
-
-# ─── List backups ─────────────────────────────────────────
-list_backups() {
-  [[ -d "$BACKUP_DIR" ]] || { echo "⚠️ Нет директории бэкапов"; return 1; }
-
-  local -a files=()
-  while IFS= read -r f; do
-    [[ -f "$BACKUP_DIR/$f" ]] && files+=("$f")
-  done < <(ls -1 "$BACKUP_DIR" 2>/dev/null | sort -r)
-
-  if [[ ${#files[@]} -eq 0 ]]; then
-    echo "⚠️ Бэкапов нет"
-    return 1
-  fi
-
-  echo ""
-  echo "  Бэкапы в $BACKUP_DIR:"
-  echo "  ────────────────────────────────────────"
-  local i=1
-  for f in "${files[@]}"; do
-    local date_str
-    date_str="$(stat -c '%y' "$BACKUP_DIR/$f" 2>/dev/null | cut -d. -f1)"
-    printf "    %2d) %s  (%s)\n" "$i" "$f" "${date_str:-?}"
-    ((i++))
-  done
-  echo "  Всего: ${#files[@]}"
-}
-
-# ─── Status display ────────────────────────────────────────
-show_status() {
-  echo ""
-  echo "  ┌─────────────────────────────────────────────┐"
-
-  # Caddy status
-  if systemctl is-active --quiet caddy 2>/dev/null; then
-    echo "  │ Caddy:      🟢 работает"
-  else
-    echo "  │ Caddy:      🔴 не запущен"
-  fi
-
-  # Config + domain
-  if [[ -f "$CONFIG" ]]; then
-    local domain
-    domain="$(get_domain 2>/dev/null || echo '')"
-    if [[ -n "$domain" ]]; then
-      echo "  │ Домен:      $domain"
-    else
-      echo "  │ Домен:      не найден в конфиге"
-    fi
-
-    # Clients count
-    local cnt
-    cnt=$(list_clients_lines 2>/dev/null | wc -l | tr -d ' ')
-    echo "  │ Клиентов:   ${cnt:-0}"
-  else
-    echo "  │ Конфиг:     не установлен"
-  fi
-
-  # Caddy binary version
-  if command -v caddy >/dev/null 2>&1; then
-    local ver
-    ver="$(caddy version 2>/dev/null | awk '{print $1}' | head -1)"
-    echo "  │ Caddy ver:  ${ver:-unknown}"
-  fi
-
-  # Port listening
-  local p443_tcp p443_udp
-  p443_tcp=$(ss -Hlnt 2>/dev/null | awk '$4 ~ /[:.]443$/ {print "TCP"; exit}')
-  p443_udp=$(ss -Hlnu 2>/dev/null | awk '$4 ~ /[:.]443$/ {print "UDP"; exit}')
-  if [[ -n "$p443_tcp" || -n "$p443_udp" ]]; then
-    echo "  │ :443:       ${p443_tcp:-}${p443_udp:+ ${p443_udp}}"
-  fi
-
-  echo "  └─────────────────────────────────────────────┘"
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -982,40 +1015,39 @@ show_status() {
 # ═══════════════════════════════════════════════════════════
 need_root
 
-# Безопасный запуск действия в subshell — ошибка не убьёт меню
 run_action() {
-  ( "$@" ) || echo "⚠️ Действие завершилось с ошибкой"
+  ( "$@" ) || echo "⚠️  Действие завершилось с ошибкой"
 }
 
 while true; do
   clear 2>/dev/null || printf '\n\n\n'
   echo ""
   echo "  ╔═══════════════════════════════════════════╗"
-  echo "  ║         NaïveProxy Manager                ║"
+  echo "  ║          NaïveProxy Manager               ║"
   echo "  ╚═══════════════════════════════════════════╝"
 
   show_status
 
   echo ""
-  echo "  1)  Установить"
+  echo "  ── Установка ────────────────────────────────"
+  echo "  1)  Установить / Переустановить"
   echo "  2)  Обновить Caddy"
-  echo "  3)  Переустановить"
-  echo "  ─"
+  echo "  ── Клиенты ──────────────────────────────────"
   echo "  4)  Добавить клиента"
   echo "  5)  Список клиентов"
   echo "  6)  Удалить клиента"
   echo "  7)  Сменить пароль"
   echo "  8)  QR-код"
-  echo "  ─"
-  echo "  9)  Создать бэкап"
-  echo "  10) Восстановить бэкап"
-  echo "  11) Экспорт JSON"
-  echo "  ─"
-  echo "  12) Показать конфиг"
-  echo "  13) Показать логи"
-  echo "  14) Управление сервисом"
-  echo "  15) Диагностика"
-  echo "  16) Удалить установку"
+  echo "  9)  Экспорт JSON (клиентский конфиг)"
+  echo "  ── Бэкапы ───────────────────────────────────"
+  echo "  10) Создать бэкап"
+  echo "  11) Восстановить бэкап"
+  echo "  12) Список бэкапов"
+  echo "  ── Прочее ───────────────────────────────────"
+  echo "  13) Показать Caddyfile"
+  echo "  15) Управление сервисами"
+  echo "  16) Диагностика"
+  echo "  17) Удалить установку"
   echo "  0)  Выход"
   echo ""
 
@@ -1028,22 +1060,21 @@ while true; do
       ;;
     1)  run_action install_or_reinstall ;;
     2)  run_action update_caddy ;;
-    3)  run_action install_or_reinstall ;;
     4)
       (
         ask_credentials
         add_client "$_LOGIN" "$_PASSWORD"
-      ) || echo "⚠️ Не удалось добавить клиента"
+      ) || echo "⚠️  Не удалось добавить клиента"
       ;;
     5)  run_action list_clients ;;
     6)
       (
         U="$(pick_client)" || { echo "Отмена"; exit 0; }
         echo ""
-        read -rp "  Удалить клиента '$U'? (y/n): " yn
+        read -rp "  Удалить '$U'? (y/n): " yn
         [[ "$yn" == "y" ]] || { echo "Отмена"; exit 0; }
         delete_client "$U"
-      ) || echo "⚠️ Не удалось удалить"
+      ) || echo "⚠️  Не удалось удалить"
       ;;
     7)
       (
@@ -1053,6 +1084,7 @@ while true; do
         echo "    1) Сгенерировать"
         echo "    2) Ввести вручную"
         read -rp "  [1/2]: " choice
+        NEWPASS=""
         case "$choice" in
           2)
             read -rsp "  Пароль (скрытый ввод): " NEWPASS
@@ -1065,40 +1097,33 @@ while true; do
         esac
         validate_password "$NEWPASS"
         change_password "$U" "$NEWPASS"
-      ) || echo "⚠️ Не удалось сменить пароль"
+      ) || echo "⚠️  Не удалось сменить пароль"
       ;;
     8)  run_action show_qr ;;
-    9)  run_action backup_now ;;
-    10) run_action restore_backup ;;
-    11) run_action export_json ;;
-    12)
+    9)  run_action export_json ;;
+    10) run_action backup_now ;;
+    11) run_action restore_backup ;;
+    12) run_action list_backups ;;
+    13)
       echo ""
       if [[ -f "$CONFIG" ]]; then
         echo "  ─── $CONFIG ───"
         echo ""
         cat "$CONFIG"
         echo ""
-        echo "  ─── конец ───"
+        echo "  ────────────────"
       else
-        echo "  ⚠️ Конфиг не найден: $CONFIG"
+        echo "  ⚠️  Конфиг не найден: $CONFIG"
       fi
       ;;
-    13)
-      echo ""
-      echo "  ─── Последние 30 строк лога Caddy ───"
-      echo ""
-      journalctl -u caddy --no-pager -n 30 2>/dev/null || echo "  ⚠️ Логи не найдены"
-      echo ""
-      echo "  ─── конец (для live-лога: journalctl -u caddy -f) ───"
-      ;;
-    14) run_action service_control ;;
-    15) run_action diagnose ;;
-    16) run_action uninstall ;;
+    15) run_action service_control ;;
+    16) run_action diagnose ;;
+    17) run_action uninstall ;;
     *)
       echo "❌ Неверный выбор"
       ;;
   esac
 
   echo ""
-  read -rp "  ↵ Нажми Enter чтобы вернуться в меню..." _
+  read -rp "  ↵ Enter для возврата в меню..." _
 done
